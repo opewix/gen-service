@@ -45,6 +45,10 @@ async def providers() -> AsyncIterator[Providers]:
         for name in PROVIDER_URLS:
             await providers.configure(name)
         yield providers
+        # После теста — поведение по умолчанию из задания (2–20 с, без сбоев),
+        # чтобы стек после прогона тестов вёл себя как при обычном запуске.
+        for url in PROVIDER_URLS.values():
+            (await client.put(f"{url}/control/behavior", json={})).raise_for_status()
 
 
 @pytest.fixture
