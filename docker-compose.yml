@@ -1,0 +1,94 @@
+x-app: &app
+  build: .
+  image: gen-service:local
+  environment: &app-env
+    DATABASE_URL: postgresql+asyncpg://gen:gen@db:5432/gen
+    WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-secret}
+    PROVIDER_TIMEOUT_SECONDS: ${PROVIDER_TIMEOUT_SECONDS:-60}
+    PROVIDER_URLS: '{"alpha": "http://alpha:8000", "beta": "http://beta:8000"}'
+
+x-healthcheck: &http-healthcheck
+  test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+  interval: 2s
+  timeout: 3s
+  retries: 30
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gen
+      POSTGRES_PASSWORD: gen
+      POSTGRES_DB: gen
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gen -d gen"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Применяет миграции один раз и завершается; api стартует только после успеха.
+  # Так 4 воркера не пытаются мигрировать базу наперегонки.
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      alpha:
+        condition: service_healthy
+      beta:
+        condition: service_healthy
+    healthcheck: *http-healthcheck
+
+  alpha:
+    <<: *app
+    command: ["uvicorn", "fake_provider.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      PROVIDER_NAME: alpha
+      WEBHOOK_URL: http://api:8000/webhooks/providers/alpha
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-secret}
+    ports:
+      - "8001:8000"
+    healthcheck: *http-healthcheck
+
+  beta:
+    <<: *app
+    command: ["uvicorn", "fake_provider.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      PROVIDER_NAME: beta
+      WEBHOOK_URL: http://api:8000/webhooks/providers/beta
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-secret}
+    ports:
+      - "8002:8000"
+    healthcheck: *http-healthcheck
+
+  # docker compose run --rm tests
+  tests:
+    <<: *app
+    profiles: ["test"]
+    command: ["pytest", "-v"]
+    environment:
+      <<: *app-env
+      API_URL: http://api:8000
+      ALPHA_URL: http://alpha:8000
+      BETA_URL: http://beta:8000
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:
