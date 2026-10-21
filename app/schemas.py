@@ -63,6 +63,9 @@ class TaskOut(BaseModel):
     id: UUID
     status: str
     model_slug: str
+    prompt: str
+    ref_images: list[str]
+    created_at: datetime
     current_provider: str | None
     result_url: str | None
     error_type: ErrorType | None
@@ -81,3 +84,16 @@ class BalanceOut(BaseModel):
     user_id: int
     balance: int
     ledger: list[LedgerEntryOut]
+
+
+class LegOut(BaseModel):
+    provider: str
+    priority: int
+    max_ref_images: int
+    skip_on_moderation: bool
+
+
+class ModelOut(BaseModel):
+    slug: str
+    price: int
+    legs: list[LegOut]

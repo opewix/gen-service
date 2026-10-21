@@ -9,7 +9,8 @@ WORKDIR /srv
 
 # Сначала зависимости — слой кэшируется, пока не меняется pyproject.toml.
 COPY pyproject.toml ./
-RUN mkdir app fake_provider && touch app/__init__.py fake_provider/__init__.py \
+RUN mkdir app fake_provider fake_payments \
+    && touch app/__init__.py fake_provider/__init__.py fake_payments/__init__.py \
     && pip install ".[dev]" && pip uninstall -y gen-service
 
 COPY . .

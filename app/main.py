@@ -1,16 +1,19 @@
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import dispatcher, watchdog
-from app.api import generate, tasks, users, webhooks
+from app.api import catalog, generate, tasks, users, webhooks
 from app.db import engine, get_session
 
 
@@ -31,6 +34,14 @@ app.include_router(generate.router)
 app.include_router(webhooks.router)
 app.include_router(tasks.router)
 app.include_router(users.router)
+app.include_router(catalog.router)
+# Простой UI без сборки: статика с того же адреса, CORS не нужен.
+app.mount("/ui", StaticFiles(directory=Path(__file__).parent / "ui", html=True), name="ui")
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse("/ui/")
 
 
 @app.exception_handler(ValidationError)

@@ -1,11 +1,12 @@
+from collections import defaultdict
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
-from app.models import GenerationModel, ModelLeg, Task, TaskAttempt
+from app.models import GenerationModel, ModelLeg, Task, TaskAttempt, User
 from app.schemas import AttemptOut, TaskOut
 
 router = APIRouter(tags=["tasks"])
@@ -13,31 +14,49 @@ router = APIRouter(tags=["tasks"])
 
 @router.get("/tasks/{task_id}", response_model=TaskOut, responses={404: {}})
 async def get_task(task_id: UUID, session: AsyncSession = Depends(get_session)) -> TaskOut:
-    # Задача и её попытки из одного снимка, чтобы статус не расходился с историей.
+    tasks = await load_tasks(session, Task.id == task_id, limit=1)
+    if not tasks:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "task not found")
+    return tasks[0]
+
+
+@router.get("/users/{user_id}/tasks", response_model=list[TaskOut], responses={404: {}})
+async def list_user_tasks(
+    user_id: int,
+    limit: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+) -> list[TaskOut]:
+    tasks = await load_tasks(session, Task.user_id == user_id, limit=limit)
+    if not tasks and await session.get(User, user_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
+    return tasks
+
+
+async def load_tasks(
+    session: AsyncSession, where: ColumnElement[bool], *, limit: int
+) -> list[TaskOut]:
+    # Задачи и их попытки из одного снимка, чтобы статус не расходился с историей.
     await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
-    row = (
+    rows = (
         await session.execute(
             select(Task, GenerationModel.slug, ModelLeg.provider)
             .join(GenerationModel, GenerationModel.id == Task.model_id)
             .outerjoin(ModelLeg, ModelLeg.id == Task.current_leg_id)
-            .where(Task.id == task_id)
+            .where(where)
+            .order_by(Task.created_at.desc())
+            .limit(limit)
         )
-    ).one_or_none()
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "task not found")
-    task, model_slug, current_provider = row
+    ).all()
+    if not rows:
+        return []
 
-    attempts = await session.scalars(
-        select(TaskAttempt).where(TaskAttempt.task_id == task_id).order_by(TaskAttempt.id)
-    )
-    return TaskOut(
-        id=task.id,
-        status=task.status,
-        model_slug=model_slug,
-        current_provider=current_provider,
-        result_url=task.result_url,
-        error_type=task.error_type,
-        attempts=[
+    attempts: dict[UUID, list[AttemptOut]] = defaultdict(list)
+    for a in await session.scalars(
+        select(TaskAttempt)
+        .where(TaskAttempt.task_id.in_([task.id for task, _, _ in rows]))
+        .order_by(TaskAttempt.id)
+    ):
+        attempts[a.task_id].append(
             AttemptOut(
                 provider=a.provider,
                 status=a.status,
@@ -48,6 +67,19 @@ async def get_task(task_id: UUID, session: AsyncSession = Depends(get_session)) 
                 created_at=a.created_at,
                 finished_at=a.finished_at,
             )
-            for a in attempts
-        ],
-    )
+        )
+    return [
+        TaskOut(
+            id=task.id,
+            status=task.status,
+            model_slug=model_slug,
+            prompt=task.prompt,
+            ref_images=task.ref_images,
+            created_at=task.created_at,
+            current_provider=current_provider,
+            result_url=task.result_url,
+            error_type=task.error_type,
+            attempts=attempts[task.id],
+        )
+        for task, model_slug, current_provider in rows
+    ]
