@@ -22,7 +22,7 @@ from app.models import (
     TaskAttempt,
     User,
 )
-from app.schemas import GenerateRequest
+from app.schemas import GenerateRequest, ProviderWebhook
 
 
 class GenerateError(Exception):
@@ -246,3 +246,56 @@ async def finish_failed(session: AsyncSession, task: Task, error_type: str) -> N
         idempotency_key=f"refund:{task.id}",
         task_id=task.id,
     )
+
+
+async def process_provider_webhook(
+    session: AsyncSession, provider: str, webhook: ProviderWebhook
+) -> tuple[str, int | None]:
+    """Возвращает (результат, id следующей попытки для отправки).
+
+    unknown  — такой external_id нам неизвестен: возможно, вебхук обогнал запись
+               ответа на POST /tasks. Отвечаем 404, провайдер повторит.
+    accepted — вебхук изменил состояние задачи.
+    ignored  — дубль или вебхук по уже снятой попытке.
+    """
+    async with session.begin():
+        ref = (
+            await session.execute(
+                select(TaskAttempt.id, TaskAttempt.task_id).where(
+                    TaskAttempt.provider == provider, TaskAttempt.external_id == webhook.external_id
+                )
+            )
+        ).one_or_none()
+        if ref is None:
+            return "unknown", None
+
+        task = await lock_task(session, ref.task_id)
+        attempt = await lock_attempt(session, ref.id)
+        assert task is not None and attempt is not None
+
+        if webhook.status == "failed":
+            if attempt.status not in ACTIVE_ATTEMPT_STATUSES or task.status not in ACTIVE_TASK_STATUSES:
+                return "ignored", None
+            assert webhook.error_type is not None
+            next_attempt = await fail_locked(
+                session, task, attempt, error_type=webhook.error_type, detail=None, final_status="failed"
+            )
+            return "accepted", next_attempt
+
+        assert webhook.result_url is not None
+        return await complete_locked(session, task, attempt, webhook.result_url), None
+
+
+async def complete_locked(
+    session: AsyncSession, task: Task, attempt: TaskAttempt, result_url: str
+) -> str:
+    if attempt.status not in ACTIVE_ATTEMPT_STATUSES or task.status not in ACTIVE_TASK_STATUSES:
+        return "ignored"
+    now = utcnow()
+    attempt.status = "completed"
+    attempt.result_url = result_url
+    attempt.finished_at = now
+    task.status = "completed"
+    task.result_url = result_url
+    task.updated_at = now
+    return "accepted"

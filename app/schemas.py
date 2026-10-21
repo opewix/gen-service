@@ -34,7 +34,7 @@ class ProviderWebhook(BaseModel):
 
 
 class ProviderWebhookOut(BaseModel):
-    result: str
+    result: Literal["accepted", "ignored"]
 
 
 class PaymentWebhook(BaseModel):
