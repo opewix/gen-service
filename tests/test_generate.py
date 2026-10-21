@@ -3,7 +3,7 @@ import asyncio
 import httpx
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from tests.conftest import assert_balance_matches_ledger, balance_of, fund
+from tests.conftest import Providers, assert_balance_matches_ledger, balance_of, fund
 
 
 def order(user_id: int, model: str = "image-fast", refs: int = 0) -> dict:
@@ -64,8 +64,10 @@ async def test_unknown_model_or_user_is_404(api: httpx.AsyncClient, user_id: int
 
 
 async def test_concurrent_generates_respect_active_limit(
-    api: httpx.AsyncClient, db: AsyncEngine, user_id: int
+    api: httpx.AsyncClient, db: AsyncEngine, user_id: int, providers: Providers
 ) -> None:
+    # Задачи не должны успеть завершиться, пока идут запросы.
+    await providers.configure("alpha", delay_min=30, delay_max=30)
     await fund(api, user_id, 100)
 
     responses = await asyncio.gather(*(api.post("/generate", json=order(user_id)) for _ in range(10)))
