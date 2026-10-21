@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -8,7 +9,7 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import dispatcher
+from app import dispatcher, watchdog
 from app.api import generate, tasks, users, webhooks
 from app.db import engine, get_session
 
@@ -16,7 +17,11 @@ from app.db import engine, get_session
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     dispatcher.start()
+    # Сторож в каждом воркере: дублирования нет за счёт SKIP LOCKED (см. app/watchdog.py),
+    # а падение одного процесса не останавливает присмотр за задачами.
+    watchdog_task = asyncio.create_task(watchdog.run_forever())
     yield
+    watchdog_task.cancel()
     await dispatcher.stop()
     await engine.dispose()
 

@@ -44,6 +44,7 @@ async def get_task(task_id: UUID, session: AsyncSession = Depends(get_session)) 
                 error_type=a.error_type,
                 error_detail=a.error_detail,
                 result_url=a.result_url,
+                late_result_at=a.late_result_at,
                 created_at=a.created_at,
                 finished_at=a.finished_at,
             )

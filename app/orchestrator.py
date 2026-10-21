@@ -289,6 +289,12 @@ async def process_provider_webhook(
 async def complete_locked(
     session: AsyncSession, task: Task, attempt: TaskAttempt, result_url: str
 ) -> str:
+    if task.status == "completed":
+        return "ignored"
+
+    if attempt.status == "timed_out":
+        return await complete_late(session, task, attempt, result_url)
+
     if attempt.status not in ACTIVE_ATTEMPT_STATUSES or task.status not in ACTIVE_TASK_STATUSES:
         return "ignored"
     now = utcnow()
@@ -297,5 +303,39 @@ async def complete_locked(
     attempt.finished_at = now
     task.status = "completed"
     task.result_url = result_url
+    task.updated_at = now
+    return "accepted"
+
+
+async def complete_late(
+    session: AsyncSession, task: Task, attempt: TaskAttempt, result_url: str
+) -> str:
+    """Правило 6: completed пришёл по попытке, которую сторож уже признал неудачной.
+
+    Задача не должна получить и результат, и возврат, поэтому решает то, был ли возврат:
+    - задача ещё в работе на другой ноге — возврата не было и уже не будет: отдаём
+      готовый результат, а текущую попытку снимаем (её ответ потом проигнорируем);
+    - задача уже failed — токены вернули, результат не выдаём. Списать заново нельзя:
+      денег может не хватить, а пользователь уже видел отказ. Результат остаётся
+      в истории попытки, чтобы было видно, что он пришёл.
+    """
+    now = utcnow()
+    attempt.result_url = result_url
+    attempt.late_result_at = now
+    if task.status not in ACTIVE_TASK_STATUSES:
+        return "ignored"
+
+    in_flight = await session.scalars(
+        select(TaskAttempt)
+        .where(TaskAttempt.task_id == task.id, TaskAttempt.status.in_(ACTIVE_ATTEMPT_STATUSES))
+        .with_for_update()
+    )
+    for other in in_flight:
+        other.status = "cancelled"
+        other.error_detail = "superseded by late result of an earlier attempt"
+        other.finished_at = now
+    task.status = "completed"
+    task.result_url = result_url
+    task.current_leg_id = attempt.leg_id
     task.updated_at = now
     return "accepted"

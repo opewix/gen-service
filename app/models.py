@@ -152,6 +152,8 @@ class TaskAttempt(Base):
     error_type: Mapped[str | None] = mapped_column(Text)
     error_detail: Mapped[str | None] = mapped_column(Text)
     result_url: Mapped[str | None] = mapped_column(Text)
+    # completed пришёл после того, как сторож перестал ждать эту попытку (правило 6).
+    late_result_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

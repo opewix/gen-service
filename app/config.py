@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     # Таймаут на сам POST /tasks к провайдеру.
     provider_request_timeout_seconds: float = 5
     max_active_tasks_per_user: int = 3
+    watchdog_interval_seconds: float = 1
+    # pending-попытку старше этого сторож считает брошенной (процесс упал до отправки).
+    pending_dispatch_grace_seconds: float = 10
     # JSON в env: PROVIDER_URLS='{"alpha": "http://alpha:8000", "beta": "http://beta:8000"}'
     provider_urls: dict[str, str] = {
         "alpha": "http://alpha:8000",

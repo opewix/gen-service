@@ -54,6 +54,7 @@ class AttemptOut(BaseModel):
     error_type: ErrorType | None
     error_detail: str | None
     result_url: str | None
+    late_result_at: datetime | None
     created_at: datetime
     finished_at: datetime | None
 
