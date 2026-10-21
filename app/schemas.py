@@ -32,6 +32,10 @@ class PaymentWebhook(BaseModel):
     status: str
 
 
+class PaymentWebhookOut(BaseModel):
+    result: Literal["credited", "duplicate", "ignored"]
+
+
 class AttemptOut(BaseModel):
     provider: str
     status: str
