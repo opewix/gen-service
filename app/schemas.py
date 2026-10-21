@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 ErrorType = Literal["technical", "moderation", "payload"]
 
@@ -24,6 +24,18 @@ class ProviderWebhook(BaseModel):
     result_url: str | None = None
     error_type: ErrorType | None = None
 
+    @model_validator(mode="after")
+    def outcome_has_details(self) -> "ProviderWebhook":
+        if self.status == "completed" and not self.result_url:
+            raise ValueError("completed webhook requires result_url")
+        if self.status == "failed" and self.error_type is None:
+            raise ValueError("failed webhook requires error_type")
+        return self
+
+
+class ProviderWebhookOut(BaseModel):
+    result: str
+
 
 class PaymentWebhook(BaseModel):
     payment_id: str
@@ -40,6 +52,8 @@ class AttemptOut(BaseModel):
     provider: str
     status: str
     error_type: ErrorType | None
+    error_detail: str | None
+    result_url: str | None
     created_at: datetime
     finished_at: datetime | None
 
@@ -50,6 +64,7 @@ class TaskOut(BaseModel):
     model_slug: str
     current_provider: str | None
     result_url: str | None
+    error_type: ErrorType | None
     attempts: list[AttemptOut]
 
 

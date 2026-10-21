@@ -5,6 +5,7 @@ import os
 import random
 from collections.abc import AsyncIterator
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -65,3 +66,15 @@ async def assert_balance_matches_ledger(db: AsyncEngine, user_id: int) -> int:
         ).one()
     assert balance == ledger_sum
     return balance
+
+
+async def fund(api: httpx.AsyncClient, user_id: int, tokens: int) -> None:
+    """Пополняет баланс через платёжный вебхук — тем же путём, что и в жизни."""
+    body = {"payment_id": f"test-{uuid4()}", "user_id": user_id, "tokens": tokens, "status": "succeeded"}
+    response = await api.post("/webhooks/payments", **signed(body))
+    assert response.json() == {"result": "credited"}
+
+
+async def balance_of(api: httpx.AsyncClient, user_id: int) -> int:
+    return (await api.get(f"/users/{user_id}/balance")).json()["balance"]
+
