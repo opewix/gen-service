@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.models import GenerationModel, ModelLeg, Task, TaskAttempt, User
-from app.schemas import AttemptOut, TaskOut
+from app.schemas import AttemptOut, LegOut, TaskOut
 
 router = APIRouter(tags=["tasks"])
 
@@ -39,7 +39,7 @@ async def load_tasks(
     await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
     rows = (
         await session.execute(
-            select(Task, GenerationModel.slug, ModelLeg.provider)
+            select(Task, GenerationModel.slug, ModelLeg)
             .join(GenerationModel, GenerationModel.id == Task.model_id)
             .outerjoin(ModelLeg, ModelLeg.id == Task.current_leg_id)
             .where(where)
@@ -76,10 +76,18 @@ async def load_tasks(
             prompt=task.prompt,
             ref_images=task.ref_images,
             created_at=task.created_at,
-            current_provider=current_provider,
+            current_provider=leg.provider if leg else None,
+            current_leg=LegOut(
+                provider=leg.provider,
+                priority=leg.priority,
+                max_ref_images=leg.max_ref_images,
+                skip_on_moderation=leg.skip_on_moderation,
+            )
+            if leg
+            else None,
             result_url=task.result_url,
             error_type=task.error_type,
             attempts=attempts[task.id],
         )
-        for task, model_slug, current_provider in rows
+        for task, model_slug, leg in rows
     ]

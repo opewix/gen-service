@@ -33,6 +33,12 @@ async def test_first_leg_fails_task_completes_on_second(
 
     assert task["status"] == "completed"
     assert task["current_provider"] == "beta"
+    assert task["current_leg"] == {
+        "provider": "beta",
+        "priority": 2,
+        "max_ref_images": 10,
+        "skip_on_moderation": False,
+    }
     assert task["result_url"].startswith("https://files.example/beta/")
     assert [(a["provider"], a["status"], a["error_type"]) for a in task["attempts"]] == [
         ("alpha", "failed", "technical"),
