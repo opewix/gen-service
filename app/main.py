@@ -8,13 +8,16 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import dispatcher
 from app.api import generate, tasks, users, webhooks
 from app.db import engine, get_session
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    dispatcher.start()
     yield
+    await dispatcher.stop()
     await engine.dispose()
 
 

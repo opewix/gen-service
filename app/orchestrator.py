@@ -5,14 +5,23 @@
 и каждый следующий видит уже обновлённое состояние.
 """
 
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.ledger import apply_entry
-from app.models import ACTIVE_TASK_STATUSES, GenerationModel, ModelLeg, Task, TaskAttempt, User
+from app.models import (
+    ACTIVE_ATTEMPT_STATUSES,
+    ACTIVE_TASK_STATUSES,
+    GenerationModel,
+    ModelLeg,
+    Task,
+    TaskAttempt,
+    User,
+)
 from app.schemas import GenerateRequest
 
 
@@ -101,4 +110,139 @@ async def lock_task(session: AsyncSession, task_id: UUID) -> Task | None:
         .where(Task.id == task_id)
         .with_for_update()
         .execution_options(populate_existing=True)
+    )
+
+
+async def lock_attempt(session: AsyncSession, attempt_id: int) -> TaskAttempt | None:
+    # Вызывать после lock_task: порядок блокировок везде «задача, затем попытка».
+    return await session.scalar(
+        select(TaskAttempt)
+        .where(TaskAttempt.id == attempt_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+async def record_submission(
+    session: AsyncSession, task_id: UUID, attempt_id: int, external_id: str
+) -> None:
+    """Провайдер принял задачу (202): ждём вебхук до PROVIDER_TIMEOUT."""
+    async with session.begin():
+        task = await lock_task(session, task_id)
+        attempt = await lock_attempt(session, attempt_id)
+        assert task is not None and attempt is not None
+        # external_id сохраняем всегда: если попытку уже сняли (аренда истекла,
+        # задача завершилась), поздний вебхук по нему узнаем как устаревший.
+        attempt.external_id = external_id
+        if attempt.status != "dispatching":
+            return
+        attempt.status = "submitted"
+        attempt.deadline_at = utcnow() + timedelta(seconds=get_settings().provider_timeout_seconds)
+        if task.status == "pending":
+            task.status = "running"
+            task.updated_at = utcnow()
+
+
+async def fail_attempt(
+    session: AsyncSession,
+    task_id: UUID,
+    attempt_id: int,
+    *,
+    error_type: str,
+    detail: str | None = None,
+    final_status: str = "failed",
+) -> int | None:
+    """Отказ провайдера: вебхук failed или синхронная ошибка. Возвращает id
+    следующей попытки, которую надо отправить, или None."""
+    async with session.begin():
+        task = await lock_task(session, task_id)
+        attempt = await lock_attempt(session, attempt_id)
+        assert task is not None and attempt is not None
+        return await fail_locked(
+            session, task, attempt, error_type=error_type, detail=detail, final_status=final_status
+        )
+
+
+async def fail_locked(
+    session: AsyncSession,
+    task: Task,
+    attempt: TaskAttempt,
+    *,
+    error_type: str,
+    detail: str | None,
+    final_status: str,
+) -> int | None:
+    """Единая точка для всех отказов: вебхук failed, синхронная ошибка, сторож.
+    Ведёт к следующей ноге или к единственному возврату. Задача уже заблокирована.
+
+    Повторный вызов по той же попытке (дубль вебхука, гонка со сторожем) видит,
+    что попытка уже не активна, и ничего не делает: так 10 одинаковых failed
+    дают один переход и один возврат.
+    """
+    if attempt.status not in ACTIVE_ATTEMPT_STATUSES or task.status not in ACTIVE_TASK_STATUSES:
+        return None
+
+    now = utcnow()
+    attempt.status = final_status
+    attempt.error_type = error_type
+    attempt.error_detail = detail
+    attempt.finished_at = now
+    task.updated_at = now
+
+    # payload — неверная форма запроса, её отвергнет любая нога.
+    if error_type == "payload":
+        await finish_failed(session, task, error_type)
+        return None
+
+    leg = await next_leg(session, task, attempt)
+    if leg is None:
+        await finish_failed(session, task, error_type)
+        return None
+
+    task.status = "pending"
+    task.current_leg_id = leg.id
+    new_attempt = TaskAttempt(task_id=task.id, leg_id=leg.id, provider=leg.provider)
+    session.add(new_attempt)
+    await session.flush()
+    return new_attempt.id
+
+
+async def next_leg(session: AsyncSession, task: Task, failed: TaskAttempt) -> ModelLeg | None:
+    current = await session.get(ModelLeg, failed.leg_id)
+    assert current is not None
+    # «Предыдущая отказала по модерации» трактуем как любой отказ moderation в истории
+    # задачи: контент уже признан проблемным, и нога со skip_on_moderation его не получит.
+    moderated = await session.scalar(
+        select(
+            exists().where(
+                TaskAttempt.task_id == task.id, TaskAttempt.error_type == "moderation"
+            )
+        )
+    )
+    for leg in await model_legs(session, task.model_id):
+        if leg.priority <= current.priority or not leg_accepts(leg, task.ref_images):
+            continue
+        if moderated and leg.skip_on_moderation:
+            continue
+        return leg
+    return None
+
+
+async def finish_failed(session: AsyncSession, task: Task, error_type: str) -> None:
+    task.status = "failed"
+    task.error_type = error_type
+    task.updated_at = utcnow()
+    # Ключ refund:<task_id> — вторая линия защиты: даже если переход сюда случится
+    # дважды, журнал примет только один возврат.
+    await apply_entry(
+        session,
+        user_id=task.user_id,
+        amount=task.price,
+        kind="refund",
+        idempotency_key=f"refund:{task.id}",
+        task_id=task.id,
     )

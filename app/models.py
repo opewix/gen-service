@@ -36,7 +36,18 @@ NAMING_CONVENTION = {
 
 TASK_STATUSES = ("pending", "running", "completed", "failed")
 ACTIVE_TASK_STATUSES = ("pending", "running")
-ATTEMPT_STATUSES = ("pending", "submitted", "completed", "failed", "timed_out")
+ATTEMPT_STATUSES = (
+    "pending",
+    "dispatching",
+    "submitted",
+    "completed",
+    "failed",
+    "timed_out",
+    "cancelled",
+)
+ACTIVE_ATTEMPT_STATUSES = ("pending", "dispatching", "submitted")
+# Попытки, у которых идёт дедлайн: аренда отправки или ожидание вебхука.
+WAITING_ATTEMPT_STATUSES = ("dispatching", "submitted")
 ERROR_TYPES = ("technical", "moderation", "payload")
 LEDGER_KINDS = ("payment", "charge", "refund")
 
@@ -119,11 +130,16 @@ class TaskAttempt(Base):
         CheckConstraint(
             f"error_type IS NULL OR {_in('error_type', ERROR_TYPES)}", name="error_type_valid"
         ),
-        # Сторож ищет просроченные попытки, которые ещё ждут вебхук.
+        # Сторож ищет попытки с истёкшим дедлайном и брошенные pending.
         Index(
             "ix_task_attempts_waiting_deadline",
             "deadline_at",
-            postgresql_where=text("status = 'submitted'"),
+            postgresql_where=text(_in("status", WAITING_ATTEMPT_STATUSES)),
+        ),
+        Index(
+            "ix_task_attempts_pending_created",
+            "created_at",
+            postgresql_where=text("status = 'pending'"),
         ),
     )
 
